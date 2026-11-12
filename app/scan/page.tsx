@@ -1,0 +1,470 @@
+"use client"
+
+import type React from "react"
+
+import { supabase } from "@/lib/supabase";
+import { useState, useRef } from "react"
+import Image from "next/image"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import {
+  CameraIcon,
+  UploadIcon,
+  Loader2Icon,  
+  InfoIcon,
+  AlertTriangleIcon,
+  PencilIcon,
+  CalendarIcon,
+  PillIcon,
+} from "lucide-react"
+import { aiService, type MedicineInfo } from "@/lib/ai-service"
+import { Textarea } from "@/components/ui/textarea"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Calendar } from "@/components/ui/calendar"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { format } from "date-fns"
+import { PageShell } from "@/components/page-shell"
+
+// Define a type for medicine form data
+type MedicineFormData = {
+  name: string
+  dosage: string
+  quantity: string
+  expiryDate: Date | undefined
+  frequency: string
+  notes: string
+}
+
+
+export default function ScanPage() {
+  const [activeTab, setActiveTab] = useState("camera")
+  const [image, setImage] = useState<string | null>(null)
+  const [isProcessing, setIsProcessing] = useState(false)
+  const [medicineInfo, setMedicineInfo] = useState<MedicineInfo | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [showConfirmation, setShowConfirmation] = useState(false)
+  const [formData, setFormData] = useState<MedicineFormData>({
+    name: "",
+    dosage: "",
+    quantity: "",
+    expiryDate: undefined,
+    frequency: "",
+    notes: "",
+  })
+
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) {
+      const reader = new FileReader()
+      reader.onload = (event) => {
+        setImage(event.target?.result as string)
+        setMedicineInfo(null)
+        setError(null)
+        setShowConfirmation(false)
+      }
+      reader.readAsDataURL(file)
+    }
+  }
+
+  const processImage = async () => {
+    if (!image) return
+  
+    setIsProcessing(true)
+    setError(null)
+  
+    try {
+      // Convert image to base64 for API call
+      const base64Image = image.split(',')[1]; // Remove data:image/jpeg;base64, prefix
+      
+      // Call the AI service to extract medicine information
+      const mimeType = image.match(/^data:([^;]+);base64,/)?.[1] || "image/jpeg"
+      const result = await aiService.extractMedicineInfo(base64Image, mimeType)
+      setMedicineInfo(result)
+  
+      // Pre-fill the form with detected information
+      const expiryDate = /^\d{4}-\d{2}-\d{2}$/.test(result.expiryDate)
+        ? new Date(`${result.expiryDate}T00:00:00`)
+        : undefined
+      setFormData({
+        name: result.name === "Not specified" ? "" : result.name,
+        dosage: result.dosage === "Not specified" ? "" : result.dosage,
+        quantity: result.quantity.match(/\d+/)?.[0] || "",
+        expiryDate: expiryDate && !Number.isNaN(expiryDate.getTime()) ? expiryDate : undefined,
+        frequency: "",
+        notes: `Manufacturer: ${result.manufacturer}`,
+      })
+  
+      // Show confirmation form
+      setShowConfirmation(true)
+    } catch (err) {
+      console.error("Error processing image:", err)
+      setError("Failed to process the image. Please try again.")
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+  const handleCameraClick = () => {
+    fileInputRef.current?.click()
+  }
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target
+    setError(null)
+    setFormData((prev) => ({ ...prev, [name]: value }))
+  }
+
+  const handleSelectChange = (name: string, value: string) => {
+    setError(null)
+    setFormData((prev) => ({ ...prev, [name]: value }))
+  }
+
+  const handleDateChange = (date: Date | undefined) => {
+    setError(null)
+    setFormData((prev) => ({ ...prev, expiryDate: date }))
+  }
+
+
+  const addToInventory = async () => {
+    const { name, dosage, expiryDate, quantity, frequency, notes } = formData;
+
+    if (!name.trim() || !dosage.trim() || !expiryDate || !Number.isInteger(Number(quantity)) || Number(quantity) <= 0) {
+      setError("Enter a medicine name, dosage, positive whole-number quantity, and valid expiry date.")
+      return
+    }
+
+    setError(null)
+    const formattedExpiry = `${expiryDate.getFullYear()}-${String(expiryDate.getMonth() + 1).padStart(2, "0")}-${String(expiryDate.getDate()).padStart(2, "0")}`
+
+    try {
+      const { error } = await supabase.from("medicines").insert({
+        name,
+        dosage,
+        expiry_date: formattedExpiry,
+        quantity: Number(quantity),
+        frequency,
+        notes,
+      })
+      if (error) {
+        throw error
+      }
+    } catch (insertError) {
+      console.error("Failed to add medicine to inventory:", insertError)
+      setError("Failed to add medicine to inventory. Please try again.")
+      return
+    }
+  
+    alert("Medicine added to inventory.")
+    setFormData({
+      name: "",
+      dosage: "",
+      quantity: "",
+      expiryDate: undefined,
+      frequency: "",
+      notes: "",
+    })
+    setImage(null)
+    setMedicineInfo(null)
+    setShowConfirmation(false)
+    setActiveTab("camera")
+  }
+    
+
+  const renderMedicineForm = () => (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="name">Medicine Name*</Label>
+          <Input
+            id="name"
+            name="name"
+            value={formData.name}
+            onChange={handleInputChange}
+            placeholder="e.g., Tylenol, Advil"
+            required
+          />
+        </div>
+
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="dosage">Dosage*</Label>
+          <Input
+            id="dosage"
+            name="dosage"
+            value={formData.dosage}
+            onChange={handleInputChange}
+            placeholder="e.g., 500mg"
+            required
+          />
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="quantity">Quantity*</Label>
+          <Input
+            id="quantity"
+            name="quantity"
+            value={formData.quantity}
+            onChange={handleInputChange}
+            placeholder="e.g., 30"
+            required
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="expiryDate">Expiry Date*</Label>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" className="w-full justify-start text-left font-normal">
+                <CalendarIcon className="mr-2 h-4 w-4" />
+                {formData.expiryDate ? format(formData.expiryDate, "PPP") : "Select date"}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-0">
+              <Calendar mode="single" selected={formData.expiryDate} onSelect={handleDateChange} initialFocus />
+            </PopoverContent>
+          </Popover>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="frequency">Frequency</Label>
+          <Select onValueChange={(value) => handleSelectChange("frequency", value)} value={formData.frequency}>
+            <SelectTrigger>
+              <SelectValue placeholder="Select frequency" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="once-daily">Once Daily</SelectItem>
+              <SelectItem value="twice-daily">Twice Daily</SelectItem>
+              <SelectItem value="three-times-daily">Three Times Daily</SelectItem>
+              <SelectItem value="four-times-daily">Four Times Daily</SelectItem>
+              <SelectItem value="as-needed">As Needed</SelectItem>
+              <SelectItem value="weekly">Weekly</SelectItem>
+              <SelectItem value="monthly">Monthly</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="notes">Notes</Label>
+        <Textarea
+          id="notes"
+          name="notes"
+          value={formData.notes}
+          onChange={handleInputChange}
+          placeholder="Additional information about this medicine"
+          rows={3}
+        />
+      </div>
+    </div>
+  )
+
+  return (
+    <PageShell>
+      <div className="space-y-6">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div className="space-y-2">
+            <p className="text-sm uppercase tracking-[0.4em] text-emerald-200">Intelligent capture</p>
+            <h1 className="text-4xl font-semibold text-white">Add Medicine</h1>
+            <p className="text-white/70">
+              Scan labels, upload prescriptions, or key in details—MediTrack keeps formats consistent and alerts ready.
+            </p>
+          </div>
+          <div className="rounded-3xl border border-white/10 bg-white/5 px-6 py-4 text-sm text-white/80 backdrop-blur">
+            <p className="font-semibold text-white">Live automation</p>
+            <p className="text-white/60">AI can extract visible package details for you to review before saving.</p>
+          </div>
+        </div>
+        {error && (
+          <Alert variant="destructive">
+            <AlertTriangleIcon className="h-4 w-4" />
+            <AlertTitle>Error</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+
+        <Tabs defaultValue="camera" value={activeTab} onValueChange={setActiveTab}>
+          <TabsList className="mb-6 bg-white/5 text-white/70">
+            <TabsTrigger value="camera" className="data-[state=active]:bg-white data-[state=active]:text-slate-900">
+              <CameraIcon className="mr-2 h-4 w-4" />
+              Camera
+            </TabsTrigger>
+            <TabsTrigger value="manual" className="data-[state=active]:bg-white data-[state=active]:text-slate-900">
+              <PencilIcon className="mr-2 h-4 w-4" />
+              Manual Entry
+            </TabsTrigger>
+          </TabsList>
+
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <TabsContent value="camera" className="mt-0 lg:col-span-2">
+              {!showConfirmation ? (
+                <Card className="h-full">
+                  <CardHeader>
+                    <CardTitle>Upload Medicine Image</CardTitle>
+                    <CardDescription>Take a photo or upload an image of your medicine</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-4">
+                      <div
+                        className="cursor-pointer rounded-2xl border-2 border-dashed border-white/20 p-4 text-center transition hover:border-white/50 hover:bg-white/5"
+                        onClick={handleCameraClick}
+                      >
+                        {image ? (
+                          <Image
+                            src={image || "/placeholder.svg"}
+                            alt="Medicine"
+                            width={400}
+                            height={256}
+                            unoptimized
+                            className="mx-auto max-h-64 rounded-2xl object-contain"
+                          />
+                        ) : (
+                          <div className="py-8 text-white/70">
+                            <CameraIcon className="mx-auto mb-4 h-12 w-12 text-white/50" />
+                            <p>Click to take a photo or upload an image</p>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-center gap-3">
+                        <Input
+                          ref={fileInputRef}
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          className="hidden"
+                          onChange={handleFileChange}
+                        />
+                        <Button variant="outline" onClick={handleCameraClick}>
+                          <CameraIcon className="mr-2 h-4 w-4" />
+                          Take Photo
+                        </Button>
+                        <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
+                          <UploadIcon className="mr-2 h-4 w-4" />
+                          Upload Image
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                  <CardFooter>
+                    <Button className="w-full" onClick={processImage} disabled={!image || isProcessing}>
+                      {isProcessing ? (
+                        <>
+                          <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+                          Processing...
+                        </>
+                      ) : (
+                        "Scan Medicine"
+                      )}
+                    </Button>
+                  </CardFooter>
+                </Card>
+              ) : (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Confirm Medicine Details</CardTitle>
+                    <CardDescription>Review and complete the medicine information</CardDescription>
+                  </CardHeader>
+                  <CardContent>{renderMedicineForm()}</CardContent>
+                  <CardFooter className="flex flex-col space-y-2">
+                    <Button className="w-full" onClick={addToInventory}>
+                      Add to Inventory
+                    </Button>
+                    <Button variant="outline" className="w-full" onClick={() => setShowConfirmation(false)}>
+                      Back to Scan
+                    </Button>
+                  </CardFooter>
+                </Card>
+              )}
+            </TabsContent>
+
+            <TabsContent value="manual" className="mt-0 lg:col-span-2">
+              <Card className="h-full">
+                <CardHeader>
+                  <CardTitle>Manual Medicine Entry</CardTitle>
+                  <CardDescription>Enter medicine details manually</CardDescription>
+                </CardHeader>
+                <CardContent>{renderMedicineForm()}</CardContent>
+                <CardFooter>
+                  <Button className="w-full" onClick={addToInventory}>
+                    Add to Inventory
+                  </Button>
+                </CardFooter>
+              </Card>
+            </TabsContent>
+
+            {!showConfirmation && (
+              <Card className="h-full">
+                <CardHeader>
+                  <CardTitle>Medicine Information</CardTitle>
+                  <CardDescription>Detected medicine details and information</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {error ? (
+                    <Alert variant="destructive">
+                      <AlertTriangleIcon className="h-4 w-4" />
+                      <AlertTitle>Error</AlertTitle>
+                      <AlertDescription>{error}</AlertDescription>
+                    </Alert>
+                  ) : isProcessing ? (
+                    <div className="flex flex-col items-center justify-center py-12">
+                      <Loader2Icon className="mb-4 h-12 w-12 animate-spin text-primary" />
+                      <p className="text-muted-foreground">Processing image...</p>
+                    </div>
+                  ) : medicineInfo ? (
+                    <div className="space-y-4">
+                      <div>
+                        <h3 className="text-lg font-semibold">{medicineInfo.name}</h3>
+                        <p className="text-sm text-muted-foreground">{medicineInfo.manufacturer}</p>
+                      </div>
+                      <dl className="grid grid-cols-2 gap-3 text-sm">
+                        <dt className="text-muted-foreground">Dosage</dt>
+                        <dd>{medicineInfo.dosage}</dd>
+                        <dt className="text-muted-foreground">Expiry date</dt>
+                        <dd>{medicineInfo.expiryDate}</dd>
+                        <dt className="text-muted-foreground">Quantity</dt>
+                        <dd>{medicineInfo.quantity}</dd>
+                      </dl>
+
+                      <Alert>
+                        <InfoIcon className="h-4 w-4" />
+                        <AlertTitle>Disclaimer</AlertTitle>
+                        <AlertDescription>
+                          This information is provided for educational purposes only and should not replace professional medical advice.
+                        </AlertDescription>
+                      </Alert>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-12 text-center">
+                      <PillIcon className="mb-4 h-12 w-12 text-muted-foreground" />
+                      <p className="text-muted-foreground mb-2">No medicine scanned yet</p>
+                      <p className="text-sm text-muted-foreground">
+                        Take a photo of your medicine packaging to get detailed information
+                      </p>
+                    </div>
+                  )}
+                </CardContent>
+                {medicineInfo && !showConfirmation && (
+                  <CardFooter>
+                    <Button className="w-full" onClick={() => setShowConfirmation(true)}>
+                      Continue to Add Details
+                    </Button>
+                  </CardFooter>
+                )}
+              </Card>
+            )}
+          </div>
+        </Tabs>
+      </div>
+    </PageShell>
+  )
+}
+
